@@ -1,13 +1,24 @@
 from dataclasses import dataclass
 from heapq import heappush, heappop, heapify
+from math import sqrt
 from typing import Callable, Any
 
 import numpy as np
 from scipy.optimize import LinearConstraint, Bounds, milp, OptimizeResult
 from scipy.sparse import lil_matrix
 
-from pole_graph import FPos, CandidatePole
+from pole_grid import FPos, CandidatePole
 from set_cover import get_entity_cov_dict, get_set_cover_constraint
+
+
+# Pole cover, in theory, is a weird version of steiner tree.
+# However, with a large number of terminals, even with approximation algs its intractable to solve exactly
+# This is a heuristic approach; still NP complete but good using an ILP solver in most cases.
+# First, build a DAG based on the graph distance to existing poles if given, or else some central entity, using some
+# graph distance metric. Then solve set cover wih an ILP with an added "connectivity" constraint.
+# If a pole is used, it must connect to some pole closer to the center (graph-wise, not geometrically).
+# Ideally, in most cases, forcing the connection to connect to the graph center is good enough.
+# This also has the side effect of discouraging "fragile" connections (really long paths when shorter paths exist)
 
 
 @dataclass()
@@ -23,7 +34,7 @@ class QEntry:
 
 
 def dijkstras_dist(
-        nodes: set[CandidatePole],
+        nodes: list[CandidatePole],
         starts: list[CandidatePole],
         dist: Callable[[CandidatePole, CandidatePole], float],
 ) -> dict[CandidatePole, float]:
@@ -32,7 +43,7 @@ def dijkstras_dist(
     for start in starts:
         dists[start] = 0
 
-    heap = [QEntry(0, start) for start in starts if start in nodes]
+    heap = [QEntry(0, start) for start in starts]
     heapify(heap)
     while heap:
         d, node = heappop(heap)
@@ -67,16 +78,31 @@ def get_center(poles: list[FPos]) -> FPos:
     return x, y
 
 
+def dist_estimate1() -> Callable[[CandidatePole, CandidatePole], float]:
+    def cover_cost(pole: CandidatePole) -> float:
+        if not pole.powered_entities:
+            return sqrt(pole.pole_type.reach)
+        return pole.cost
+
+    def dist_fun(p1: CandidatePole, p2: CandidatePole) -> float:
+        return (min(p1.pole_type.reach, p2.pole_type.reach) / 10 + euclid_dist(p1.pos, p2.pos)
+                + cover_cost(p1) + cover_cost(p2))
+
+    return dist_fun
+
+
 def get_pole_dists(
         poles: list[CandidatePole],
         dist_fun: Callable[[CandidatePole, CandidatePole], float]
 ) -> tuple[FPos, dict[CandidatePole, float]]:
     center = get_center([pole.pos for pole in poles])
-    centermost_pole = min([pole for pole in poles if pole.covered_entities],
-                          key=lambda x: euclid_dist_squared(x.pos, center))
-    some_entity = next(iter(centermost_pole.covered_entities))
-    starts = [pole for pole in poles if some_entity in pole.covered_entities]
-    dists = dijkstras_dist(set(poles), starts, dist_fun)
+    starts = [pole for pole in poles if pole.connects_to_existing]
+    if not starts:
+        centermost_pole = min([pole for pole in poles if pole.powered_entities],
+                              key=lambda x: euclid_dist_squared(x.pos, center))
+        some_entity = next(iter(centermost_pole.powered_entities))
+        starts = [pole for pole in poles if some_entity in pole.powered_entities]
+    dists = dijkstras_dist(poles, starts, dist_fun)
     if len(dists) != len(poles):
         raise ValueError("Graph is not connected")
     return center, dists
@@ -87,7 +113,10 @@ def get_connectivity_constraint(
         center: FPos,
         dists: dict[CandidatePole, float],
 ) -> LinearConstraint:
-    lt = get_lt(center, dists)
+    def lt(a: CandidatePole, b: CandidatePole) -> float:
+        if dists[a] != dists[b]:
+            return dists[a] < dists[b]
+        return euclid_dist_squared(a.pos, center) < euclid_dist_squared(b.pos, center)
 
     pole_index = {pole: i for i, pole in enumerate(poles)}
 
@@ -103,16 +132,7 @@ def get_connectivity_constraint(
     return LinearConstraint(A, lb=0, ub=np.inf)
 
 
-def get_lt(center: FPos, dists: dict[CandidatePole, float]) -> Callable[[CandidatePole, CandidatePole], float]:
-    def lt(a: CandidatePole, b: CandidatePole) -> float:
-        if dists[a] != dists[b]:
-            return dists[a] < dists[b]
-        return euclid_dist_squared(a.pos, center) < euclid_dist_squared(b.pos, center)
-
-    return lt
-
-
-def solve_approximate_pole_cover(
+def solve_approx_pole_cover(
         poles: list[CandidatePole],
         dist_fun: Callable[[CandidatePole, CandidatePole], float],
         milp_options: dict[str, Any] = None
@@ -122,11 +142,11 @@ def solve_approximate_pole_cover(
     entity_cov = get_entity_cov_dict(poles)
     cover_constraint = get_set_cover_constraint(poles, entity_cov)
 
+    print("connectivity:", connectivity_constraint.A.shape)
+    print("cover:", cover_constraint.A.shape)
     c = np.array([pole.cost for pole in poles])
     bounds = Bounds(0, 1)
     integrality = np.ones_like(c)
-
-    # print(connectivity_constraint.A *)
 
     res: OptimizeResult = milp(
         c=c,

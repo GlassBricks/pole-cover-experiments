@@ -7,9 +7,9 @@ from draftsman.classes.vector import Vector
 from draftsman.prototypes.electric_pole import ElectricPole
 from draftsman.utils import AABB
 
-from pole_cover import get_center, euclid_dist, solve_approximate_pole_cover, manhattan_dist
-from set_cover import Coverage, solve_set_cover
-from pole_graph import CandidatePole
+from pole_cover import get_center, euclid_dist, solve_approx_pole_cover, manhattan_dist
+from set_cover import solve_set_cover
+from pole_grid import CandidatePole
 
 bpStr = open("input.txt").read()
 print("importing")
@@ -88,7 +88,7 @@ def maybe_add_pole(position: Vector):
     }
     # if not this_entities:
     #     return
-    return CandidatePole(position, this_entities, set())
+    return CandidatePole(position, this_entities, set(), False)
 
 
 def remove_subset_poles(candidate_poles: list[Coverage]) -> list[Coverage]:

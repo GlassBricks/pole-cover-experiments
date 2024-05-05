@@ -31,7 +31,11 @@ def get_pole_type(name: str) -> PoleType:
     reach = data.get("maximum_wire_distance")
     coverage = data.get("supply_area_distance")
     ((lx, ly), (hx, hy)) = data.get("collision_box")
-    size = max(ceil(hx - lx), ceil(hy - ly))
+    height = data.get("tile_width") or ceil(hy - ly)
+    width = data.get("tile_height") or ceil(hx - lx)
+    if width != height:
+        raise ValueError("Pole bounding box must be square")
+    size = width
     res = PoleType(name, coverage, reach, size)
     pole_types[name] = res
     return res
@@ -45,17 +49,28 @@ substation = get_pole_type("substation")
 
 class CandidatePole:
     pos: FPos
-    covered_entities: set[Any]
+    powered_entities: set[Any]
     pole_neighbors: set["CandidatePole"]
+    connects_to_existing: bool
     cost: float
+    pole_type: PoleType
 
-    def __init__(self, pos: FPos, covered_entities: set[Any], pole_neighbors: set["CandidatePole"],
-                 cost: float = 1
-
-                 ):
+    def __init__(
+            self,
+            pos: FPos,
+            pole_type: PoleType,
+            covered_entities: set[Any],
+            connects_to_existing: bool,
+            pole_neighbors=None,
+            cost: float = 1,
+    ):
+        if pole_neighbors is None:
+            pole_neighbors = set()
         self.pos = pos
-        self.covered_entities = covered_entities
+        self.powered_entities = covered_entities
         self.pole_neighbors = pole_neighbors
+        self.pole_type = pole_type
+        self.connects_to_existing = connects_to_existing
         self.cost = cost
 
     def __hash__(self):
@@ -65,7 +80,7 @@ class CandidatePole:
         return self is other
 
     def __str__(self):
-        return (f"{self.__class__.__name__}<pos={self.pos}, covered={self.covered_entities}), cost={self.cost}, "
+        return (f"{self.__class__.__name__}<pos={self.pos}, covered={self.powered_entities}), cost={self.cost}, "
                 f"neighbors(pos)={[n.pos for n in self.pole_neighbors]}>")
 
 
@@ -77,14 +92,14 @@ def iterate_bbox_tiles(bbox: BBox) -> Generator[Pos, None, None]:
 
 
 class Entity(ABC):
-    @property
-    @abstractmethod
-    def bbox(self) -> BBox:
-        pass
+
+    def __init__(self, pos: FPos, name: str):
+        self.pos = pos
+        self.name = name
 
     @property
     @abstractmethod
-    def pos(self) -> FPos:
+    def bbox(self) -> BBox:
         pass
 
     def occupied_tiles(self) -> Iterable[Pos]:
@@ -94,16 +109,12 @@ class Entity(ABC):
 class Pole(Entity):
 
     def __init__(self, pos: FPos, pole_type: Union[str, PoleType]):
-        self._pos = pos
         if isinstance(pole_type, PoleType):
-            self.type = pole_type.name
+            name = pole_type.name
         else:
-            self.type = pole_type
+            name = pole_type
+        super().__init__(pos, name)
         self.check_alignment()
-
-    @property
-    def pos(self):
-        return self._pos
 
     def check_alignment(self):
         if self.pole_type.size % 2 == 1:
@@ -116,7 +127,7 @@ class Pole(Entity):
 
     @property
     def pole_type(self) -> PoleType:
-        return get_pole_type(self.type)
+        return get_pole_type(self.name)
 
     @property
     def bbox(self) -> BBox:
@@ -141,7 +152,7 @@ class Pole(Entity):
                     yield x, y
 
     def __repr__(self):
-        return f"{self.__class__.__name__}(type={self.type}, pos={self.pos})"
+        return f"{self.__class__.__name__}(name={self.name}, pos={self.pos})"
 
 
 def aabb_to_bbox(aabb: AABB) -> BBox:
@@ -158,7 +169,7 @@ class NonPole(Entity):
                  bbox: BBox,
                  powerable: bool,
                  name: str = "non-pole"):
-        self._pos = pos
+        super().__init__(pos, name)
         self._bbox = bbox
         self.powerable = powerable
         self.name = name
@@ -166,10 +177,6 @@ class NonPole(Entity):
     @property
     def bbox(self):
         return self._bbox
-
-    @property
-    def pos(self):
-        return self._pos
 
     @classmethod
     def at_tile(cls, pos: Pos, powerable: bool, name: str = "non-pole"):
@@ -182,22 +189,22 @@ class NonPole(Entity):
 
 
 class PoleGrid:
-    _entities: set[Entity]
+    entities: set[Entity]
     by_tile: dict[Pos, set[Entity]]
 
     def __init__(self):
-        self._entities = set()
+        self.entities = set()
         self.by_tile = {}
 
     def add(self, entity: Entity, allow_overlap: bool = False):
-        self._entities.add(entity)
+        self.entities.add(entity)
         for pos in entity.occupied_tiles():
             if not allow_overlap and self.by_tile.get(pos):
                 raise ValueError("Entity overlaps with existing entity: " + str(entity))
             self.by_tile.setdefault(pos, set()).add(entity)
 
     def remove(self, entity: Entity):
-        self._entities.remove(entity)
+        self.entities.remove(entity)
         for pos in entity.occupied_tiles():
             if not self.by_tile.get(pos):
                 continue
@@ -206,10 +213,10 @@ class PoleGrid:
                 del self.by_tile[pos]
 
     def __contains__(self, item):
-        return item in self._entities
+        return item in self.entities
 
     def get_bounds(self, expand: float = 0) -> BBox:
-        bboxes = [entity.bbox for entity in self._entities]
+        bboxes = [entity.bbox for entity in self.entities]
         min_x = min(b[0][0] for b in bboxes)
         max_x = max(b[1][0] for b in bboxes)
         min_y = min(b[0][1] for b in bboxes)
@@ -244,12 +251,6 @@ class PoleGrid:
             if isinstance(entity, NonPole) and entity.powerable
         }
 
-    def remove_already_powered(self, pole: Pole):
-        for pos in pole.powered_tiles():
-            if pos in self.by_tile:
-                for entity in self.by_tile[pos]:
-                    self.remove(entity)
-
     def pole_neighbors(self, pole: Pole) -> Generator[Pole, None, None]:
         """
         Returns all poles in this graph that are within reach of the given pole.
@@ -269,22 +270,44 @@ class PoleGrid:
     def pole_adj_list(self) -> dict[Pole, set[Pole]]:
         return {
             pole: set(self.pole_neighbors(pole))
-            for pole in self._entities
+            for pole in self.entities
             if isinstance(pole, Pole)
         }
 
+    # does not include already powered stuff
     def all_candidate_poles(
             self,
-            pole_type: PoleType,
+            *pole_types: PoleType,
+            expand: float = 0,
     ) -> list[CandidatePole]:
-        poles = list(self.possible_poles(pole_type, self.get_bounds()))
+
+        already_powered = {
+            entity
+            for pole in self.entities
+            if isinstance(pole, Pole)
+            for pos in pole.powered_tiles()
+            if pos in self.by_tile
+            for entity in self.by_tile[pos]
+            if isinstance(entity, NonPole) and entity.powerable
+        }
+
+        bounds = self.get_bounds(expand=expand)
+        poles = [
+            pole for pole_type in pole_types
+            for pole in self.possible_poles(pole_type, bounds)
+        ]
         cand_poles = {
-            pole: CandidatePole(pole.pos, self.powered_entities(pole), set())
+            pole: CandidatePole(
+                pos=pole.pos,
+                pole_type=pole.pole_type,
+                covered_entities=self.powered_entities(pole) - already_powered,
+                connects_to_existing=any(self.pole_neighbors(pole)),
+            )
             for pole in poles
         }
         pole_graph = PoleGrid()
         for pole, _ in cand_poles.items():
-            pole_graph.add(pole)
+            pole_graph.add(pole, allow_overlap=True)
         for pole, candidate in cand_poles.items():
             candidate.pole_neighbors = [
                 cand_poles[neighbor]
@@ -293,7 +316,7 @@ class PoleGrid:
         return [cand_poles[pole] for pole in poles]
 
     def matplot(self, show: bool = True):
-        for entity in self._entities:
+        for entity in self.entities:
             x, y = entity.pos
             if isinstance(entity, Pole):
                 plt.plot(x, y, 'ro')
@@ -302,7 +325,6 @@ class PoleGrid:
                     plt.plot(x, y, 'gx')
                 else:
                     plt.plot(x, y, 'b.')
-
         (min_x, min_y), (max_x, max_y) = self.get_bounds(expand=1)
         plt.xlim(min_x, max_x)
         plt.ylim(min_y, max_y)

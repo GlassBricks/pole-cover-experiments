@@ -1,68 +1,19 @@
 import random
-from collections import defaultdict
 from copy import deepcopy
-from heapq import heappop, heappush
 from math import ceil
-from typing import Callable, NamedTuple, Any
+from typing import Callable
 
 import matplotlib.pyplot as plt
 from scipy.optimize import OptimizeResult
 
-from pole_cover import solve_approximate_pole_cover, euclid_dist_squared, manhattan_dist, get_center, \
-    euclid_dist, get_pole_dists
-from pole_graph import PoleGrid, Pos, NonPole, Entity, Pole, CandidatePole, small_pole
+from mst import mst, plot_adj_list
+from pole_cover import solve_approx_pole_cover, get_center, \
+    euclid_dist, get_pole_dists, dist_estimate1
+from pole_grid import PoleGrid, Pos, NonPole, Pole, CandidatePole, small_pole
 from set_cover import solve_set_cover
-
-AdjList = dict[Any, set[Any]]
-
-
-class QE(NamedTuple):
-    d: float
-    a: Entity
-    b: Entity
-
-    def __lt__(self, other):
-        return self.d < other.d
-
-    def __iter__(self):
-        return iter((self.d, self.a, self.b))
 
 
 # use euclidean distance as the edge weight
-def mst(adj_list: AdjList) -> AdjList:
-    pts = set(adj_list.keys())
-    res = defaultdict(set)
-    start = next(iter(pts))
-    visited = set()
-    heap = [QE(0, start, start)]
-    while heap:
-        weight, node, parent = heappop(heap)
-        if node in visited:
-            continue
-        visited.add(node)
-        if node != parent:
-            res[parent].add(node)
-        p1 = node.pos
-        for neighbor in adj_list[node]:
-            if neighbor not in visited:
-                p2 = neighbor.pos
-                heappush(heap, QE(euclid_dist_squared(p1, p2), neighbor, node))
-    return res
-
-
-def plot_adj_list(adj_list: AdjList):
-    for pt, neighbors in adj_list.items():
-        # directed
-        for neigh in neighbors:
-            x1, y1 = pt.pos
-            x2, y2 = neigh.pos
-            dx = x2 - x1
-            dy = y2 - y1
-            plt.arrow(
-                x1, y1, dx, dy,
-                head_width=0.5, length_includes_head=True,
-                alpha=0.6, zorder=10,
-            )
 
 
 def fill_random(
@@ -107,15 +58,8 @@ def main():
     for pole in possible_poles:
         pole.cost = euclid_dist(pole.pos, center) / 1000 + 1
 
-    def cover_cost(pole: CandidatePole) -> float:
-        if not pole.covered_entities:
-            return pole_to_use.reach
-        return pole.cost
+    dist_fun = dist_estimate1(pole_to_use)
 
-    def dist_fun(p1: CandidatePole, p2: CandidatePole) -> float:
-        return pole_to_use.reach + manhattan_dist(p1.pos, p2.pos) + cover_cost(p1) + cover_cost(p2)
-
-    center, dists = get_pole_dists(possible_poles, dist_fun)
 
     def try_with_solver(
             name: str,
@@ -155,7 +99,7 @@ def main():
 
     try_with_solver(
         "Approx pole cover",
-        lambda coverages: solve_approximate_pole_cover(coverages, dist_fun, milp_options={
+        lambda coverages: solve_approx_pole_cover(coverages, dist_fun, milp_options={
             "disp": True,
             "time_limit": 300,
         }))
