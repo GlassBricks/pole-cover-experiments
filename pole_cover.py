@@ -1,4 +1,4 @@
-import dataclasses
+from dataclasses import dataclass
 from heapq import heappush, heappop, heapify
 from typing import Callable, Any
 
@@ -6,23 +6,20 @@ import numpy as np
 from scipy.optimize import LinearConstraint, Bounds, milp, OptimizeResult
 from scipy.sparse import lil_matrix
 
+from pole_graph import FPos, CandidatePole
 from set_cover import get_entity_cov_dict, get_set_cover_constraint
 
-Pos = tuple[int, int]
 
+@dataclass()
+class QEntry:
+    d: float
+    pole: CandidatePole
 
-@dataclasses.dataclass
-class CandidatePole:
-    pos: Pos
-    covered_entities: set[Any]
-    pole_neighbors: set[Pos]
-    cost: float = 1
+    def __lt__(self, other):
+        return self.d < other.d
 
-    def __hash__(self):
-        return id(self)
-
-    def __eq__(self, other):
-        return self is other
+    def __iter__(self):
+        return iter((self.d, self.pole))
 
 
 def dijkstras_dist(
@@ -30,51 +27,51 @@ def dijkstras_dist(
         starts: list[CandidatePole],
         dist: Callable[[CandidatePole, CandidatePole], float],
 ) -> dict[CandidatePole, float]:
-    poles_by_pos = {pole.pos: pole for pole in nodes}
     dists = {node: float('inf') for node in nodes}
     vis = set()
     for start in starts:
         dists[start] = 0
 
-    heap = [(0, start.pos) for start in starts if start in nodes]
+    heap = [QEntry(0, start) for start in starts if start in nodes]
     heapify(heap)
     while heap:
-        d, node_pos = heappop(heap)
-        if node_pos in vis:
+        d, node = heappop(heap)
+        if node in vis:
             continue
-        vis.add(node_pos)
-        node = poles_by_pos[node_pos]
-        for neigh_pos in poles_by_pos[node_pos].pole_neighbors:
-            neighbor = poles_by_pos.get(neigh_pos)
+        vis.add(node)
+        for neighbor in node.pole_neighbors:
             if not neighbor or neighbor in vis:
                 continue
             nd = d + dist(node, neighbor)
             if nd < dists[neighbor]:
                 dists[neighbor] = nd
-                heappush(heap, (nd, neighbor.pos))
+                heappush(heap, QEntry(nd, neighbor))
     return dists
 
 
-def manhattan_dist(p1: Pos, p2: Pos) -> float:
+def manhattan_dist(p1: FPos, p2: FPos) -> float:
     return abs(p1[0] - p2[0]) + abs(p1[1] - p2[1])
 
 
-def euclid_dist(p1: Pos, p2: Pos) -> float:
+def euclid_dist(p1: FPos, p2: FPos) -> float:
     return ((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2) ** 0.5
 
 
-def euclid_dist_squared(p1: Pos, p2: Pos) -> float:
+def euclid_dist_squared(p1: FPos, p2: FPos) -> float:
     return (p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2
 
 
-def get_center(poles: list[CandidatePole]) -> Pos:
-    x = round(sum(pole.pos[0] for pole in poles) / len(poles))
-    y = round(sum(pole.pos[1] for pole in poles) / len(poles))
+def get_center(poles: list[FPos]) -> FPos:
+    x = round(sum(pole[0] for pole in poles) / len(poles))
+    y = round(sum(pole[1] for pole in poles) / len(poles))
     return x, y
 
 
-def get_pole_dists(poles, dist_fun):
-    center = get_center(poles)
+def get_pole_dists(
+        poles: list[CandidatePole],
+        dist_fun: Callable[[CandidatePole, CandidatePole], float]
+) -> tuple[FPos, dict[CandidatePole, float]]:
+    center = get_center([pole.pos for pole in poles])
     centermost_pole = min([pole for pole in poles if pole.covered_entities],
                           key=lambda x: euclid_dist_squared(x.pos, center))
     some_entity = next(iter(centermost_pole.covered_entities))
@@ -87,18 +84,16 @@ def get_pole_dists(poles, dist_fun):
 
 def get_connectivity_constraint(
         poles: list[CandidatePole],
-        center: Pos,
+        center: FPos,
         dists: dict[CandidatePole, float],
 ) -> LinearConstraint:
     lt = get_lt(center, dists)
 
     pole_index = {pole: i for i, pole in enumerate(poles)}
-    pos_to_pole = {pole.pos: pole for pole in poles}
 
     A = lil_matrix((len(poles), len(poles)))
     for i, y in enumerate(poles):
-        neighbors = [pos_to_pole[x] for x in y.pole_neighbors if x in pos_to_pole]
-        xs = [x for x in neighbors if lt(x, y)]
+        xs = [x for x in y.pole_neighbors if lt(x, y)]
         if not xs:
             continue
         for x in xs:
@@ -108,7 +103,7 @@ def get_connectivity_constraint(
     return LinearConstraint(A, lb=0, ub=np.inf)
 
 
-def get_lt(center: Pos, dists: dict[CandidatePole, float]) -> Callable[[CandidatePole, CandidatePole], float]:
+def get_lt(center: FPos, dists: dict[CandidatePole, float]) -> Callable[[CandidatePole, CandidatePole], float]:
     def lt(a: CandidatePole, b: CandidatePole) -> float:
         if dists[a] != dists[b]:
             return dists[a] < dists[b]
@@ -123,9 +118,9 @@ def solve_approximate_pole_cover(
         milp_options: dict[str, Any] = None
 ) -> tuple[list[CandidatePole], OptimizeResult]:
     center, dists = get_pole_dists(poles, dist_fun)
+    connectivity_constraint = get_connectivity_constraint(poles, center, dists)
     entity_cov = get_entity_cov_dict(poles)
     cover_constraint = get_set_cover_constraint(poles, entity_cov)
-    connectivity_constraint = get_connectivity_constraint(poles, center, dists)
 
     c = np.array([pole.cost for pole in poles])
     bounds = Bounds(0, 1)

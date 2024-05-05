@@ -7,8 +7,9 @@ from draftsman.classes.vector import Vector
 from draftsman.prototypes.electric_pole import ElectricPole
 from draftsman.utils import AABB
 
-from pole_cover import get_center, euclid_dist, solve_approximate_pole_cover, manhattan_dist, CandidatePole
+from pole_cover import get_center, euclid_dist, solve_approximate_pole_cover, manhattan_dist
 from set_cover import Coverage, solve_set_cover
+from pole_graph import CandidatePole
 
 bpStr = open("input.txt").read()
 print("importing")

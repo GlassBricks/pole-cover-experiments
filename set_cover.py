@@ -1,25 +1,10 @@
-import dataclasses
 from collections import defaultdict
-from typing import Any, Optional
 
 import numpy as np
 from scipy.optimize import milp, LinearConstraint, Bounds, OptimizeResult
 from scipy.sparse import lil_matrix
 
-Pos = tuple[int, int]
-
-
-@dataclasses.dataclass
-class Coverage:
-    pos: Pos
-    covered_entities: set[Any]
-    cost: float = 1
-
-    def __hash__(self):
-        return id(self)
-
-    def __eq__(self, other):
-        return self is other
+from pole_graph import CandidatePole
 
 
 def get_entity_cov_dict(coverages):
@@ -43,9 +28,9 @@ def get_set_cover_constraint(sets, entity_to_set):
 
 
 def solve_set_cover(
-        coverages: list[Coverage],
+        coverages: list[CandidatePole],
         milp_options: dict[str, any] = None
-) -> tuple[list[Coverage], OptimizeResult]:
+) -> tuple[list[CandidatePole], OptimizeResult]:
     entity_to_cov = get_entity_cov_dict(coverages)
 
     # remove subsets; only look at poles that share at least one entity
