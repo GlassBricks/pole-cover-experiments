@@ -4,11 +4,13 @@ from math import sqrt
 from typing import Callable, Any
 
 import numpy as np
-from scipy.optimize import LinearConstraint, Bounds, milp, OptimizeResult
+from matplotlib import pyplot as plt
+from scipy.optimize import LinearConstraint, milp, OptimizeResult, Bounds
 from scipy.sparse import lil_matrix
 
 from pole_grid import FPos, CandidatePole
-from set_cover import get_entity_cov_dict, get_set_cover_constraint
+from set_cover import get_entity_cov_dict, get_set_cover_constraint, get_non_intersecting_constraint, \
+    remove_subset_poles
 
 
 # Pole cover, in theory, is a weird version of steiner tree.
@@ -91,38 +93,44 @@ def dist_estimate1() -> Callable[[CandidatePole, CandidatePole], float]:
     return dist_fun
 
 
+def get_root_poles(
+        poles: list[CandidatePole],
+) -> list[CandidatePole]:
+    return [max(poles, key=lambda x: x.pos)]
+    # max(poles, key=lambda x: x.pos).connects_to_existing = True
+    # starts = [pole for pole in poles if pole.connects_to_existing]
+    # 
+    # if starts:
+    #     return starts
+
+    center = get_center([pole.pos for pole in poles])
+    centermost_pole = min([pole for pole in poles if pole.powered_entities],
+                          key=lambda x: euclid_dist_squared(x.pos, center))
+    some_entity = next(iter(centermost_pole.powered_entities))
+    return [pole for pole in poles if some_entity in pole.powered_entities]
+
+
 def get_pole_dists(
         poles: list[CandidatePole],
         dist_fun: Callable[[CandidatePole, CandidatePole], float]
-) -> tuple[FPos, dict[CandidatePole, float]]:
-    center = get_center([pole.pos for pole in poles])
-    starts = [pole for pole in poles if pole.connects_to_existing]
-    if not starts:
-        centermost_pole = min([pole for pole in poles if pole.powered_entities],
-                              key=lambda x: euclid_dist_squared(x.pos, center))
-        some_entity = next(iter(centermost_pole.powered_entities))
-        starts = [pole for pole in poles if some_entity in pole.powered_entities]
+) -> dict[CandidatePole, float]:
+    starts = get_root_poles(poles)
     dists = dijkstras_dist(poles, starts, dist_fun)
     if len(dists) != len(poles):
         raise ValueError("Graph is not connected")
-    return center, dists
+    return dists
 
 
-def get_connectivity_constraint(
-        poles: list[CandidatePole],
-        center: FPos,
-        dists: dict[CandidatePole, float],
-) -> LinearConstraint:
-    def lt(a: CandidatePole, b: CandidatePole) -> float:
-        if dists[a] != dists[b]:
-            return dists[a] < dists[b]
-        return euclid_dist_squared(a.pos, center) < euclid_dist_squared(b.pos, center)
+def get_connectivity_constraint(poles: list[CandidatePole], dists: dict[CandidatePole, float],
+                                dist_tolerance: float) -> LinearConstraint:
+    def can_reach(a: CandidatePole, b: CandidatePole) -> float:
+        return dists[a] < dists[b] + dist_tolerance
 
     pole_index = {pole: i for i, pole in enumerate(poles)}
 
     A = lil_matrix((len(poles), len(poles)))
     for i, y in enumerate(poles):
-        xs = [x for x in y.pole_neighbors if lt(x, y)]
+        xs = [x for x in y.pole_neighbors if can_reach(x, y)]
         if not xs:
             continue
         for x in xs:
@@ -132,27 +140,51 @@ def get_connectivity_constraint(
     return LinearConstraint(A, lb=0, ub=np.inf)
 
 
+def do_vis_presolve(
+        poles: list[CandidatePole],
+        dists: dict[CandidatePole, float],
+):
+    # print dists as heatmap
+    plt.gca().set_aspect('equal', adjustable='box')
+    plt.scatter([pole.pos[0] for pole in poles], [pole.pos[1] for pole in poles],
+                c=[dists[pole] for pole in poles],
+                marker='.'
+                )
+    plt.colorbar()
+    plt.show()
+
+
 def solve_approx_pole_cover(
         poles: list[CandidatePole],
         dist_fun: Callable[[CandidatePole, CandidatePole], float],
-        milp_options: dict[str, Any] = None
+        *,
+        dist_tolerance=0,
+        remove_subsets: bool = False,
+        remove_equiv: bool = False,
+        vis_poles_dist: bool = False,
+        milp_options: dict[str, Any] = None,
 ) -> tuple[list[CandidatePole], OptimizeResult]:
-    center, dists = get_pole_dists(poles, dist_fun)
-    connectivity_constraint = get_connectivity_constraint(poles, center, dists)
+    if remove_subsets or remove_equiv:
+        poles = remove_subset_poles(poles, equiv_only=remove_equiv and not remove_subsets)
+
+    dists = get_pole_dists(poles, dist_fun)
+    connectivity_constraint = get_connectivity_constraint(poles, dists, dist_tolerance)
     entity_cov = get_entity_cov_dict(poles)
     cover_constraint = get_set_cover_constraint(poles, entity_cov)
+    non_intersecting_constraint = get_non_intersecting_constraint(poles)
 
-    print("connectivity:", connectivity_constraint.A.shape)
-    print("cover:", cover_constraint.A.shape)
+    if vis_poles_dist:
+        do_vis_presolve(poles, dists)
+
+    # print("connectivity:", connectivity_constraint.A.shape)
+    # print("cover:", cover_constraint.A.shape)
     c = np.array([pole.cost for pole in poles])
-    bounds = Bounds(0, 1)
-    integrality = np.ones_like(c)
 
     res: OptimizeResult = milp(
         c=c,
-        constraints=[cover_constraint, connectivity_constraint],
-        bounds=bounds,
-        integrality=integrality,
+        constraints=[cover_constraint, connectivity_constraint, non_intersecting_constraint],
+        bounds=Bounds(0, 1),
+        integrality=1,
         options=milp_options
     )
     if res.status == 2:

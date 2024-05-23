@@ -47,43 +47,6 @@ big_pole = get_pole_type("big-electric-pole")
 substation = get_pole_type("substation")
 
 
-class CandidatePole:
-    pos: FPos
-    powered_entities: set[Any]
-    pole_neighbors: set["CandidatePole"]
-    connects_to_existing: bool
-    cost: float
-    pole_type: PoleType
-
-    def __init__(
-            self,
-            pos: FPos,
-            pole_type: PoleType,
-            covered_entities: set[Any],
-            connects_to_existing: bool,
-            pole_neighbors=None,
-            cost: float = 1,
-    ):
-        if pole_neighbors is None:
-            pole_neighbors = set()
-        self.pos = pos
-        self.powered_entities = covered_entities
-        self.pole_neighbors = pole_neighbors
-        self.pole_type = pole_type
-        self.connects_to_existing = connects_to_existing
-        self.cost = cost
-
-    def __hash__(self):
-        return id(self)
-
-    def __eq__(self, other):
-        return self is other
-
-    def __str__(self):
-        return (f"{self.__class__.__name__}<pos={self.pos}, covered={self.powered_entities}), cost={self.cost}, "
-                f"neighbors(pos)={[n.pos for n in self.pole_neighbors]}>")
-
-
 def iterate_bbox_tiles(bbox: BBox) -> Generator[Pos, None, None]:
     (lx, ly), (hx, hy) = bbox
     for x in range(floor(lx), ceil(hx)):
@@ -186,6 +149,45 @@ class NonPole(Entity):
 
     def __str__(self):
         return f"{self.__class__.__name__}(name={self.name}, pos={self.pos}, powerable={self.powerable})"
+    
+    def __repr__(self):
+        return str(self)
+
+
+class CandidatePole:
+    orig: Pole
+    powered_entities: set[Entity]
+    connects_to_existing: bool
+    pole_neighbors: set["CandidatePole"]
+    cost: float
+
+    def __init__(
+            self,
+            orig: Pole,
+            powered_entities: set[Any],
+            connects_to_existing: bool,
+            pole_neighbors=None,
+            cost: float = 1,
+    ):
+        if pole_neighbors is None:
+            pole_neighbors = set()
+        self.orig = orig
+        self.powered_entities = powered_entities
+        self.pole_neighbors = pole_neighbors
+        self.connects_to_existing = connects_to_existing
+        self.cost = cost
+
+    @property
+    def pos(self):
+        return self.orig.pos
+
+    @property
+    def pole_type(self):
+        return self.orig.pole_type
+
+    def __repr__(self):
+        return (f"{self.__class__.__name__}<pos={self.pos}, covered={self.powered_entities}), cost={self.cost}, "
+                f"neighbors(pos)={[n.pos for n in self.pole_neighbors]}>")
 
 
 class PoleGrid:
@@ -200,7 +202,7 @@ class PoleGrid:
         self.entities.add(entity)
         for pos in entity.occupied_tiles():
             if not allow_overlap and self.by_tile.get(pos):
-                raise ValueError("Entity overlaps with existing entity: " + str(entity))
+                raise ValueError("Entity overlaps with existing entity: " + str(entity), str(self.by_tile[pos]))
             self.by_tile.setdefault(pos, set()).add(entity)
 
     def remove(self, entity: Entity):
@@ -279,6 +281,7 @@ class PoleGrid:
             self,
             *pole_types: PoleType,
             expand: float = 0,
+            remove_empty = False,
     ) -> list[CandidatePole]:
 
         already_powered = {
@@ -298,13 +301,18 @@ class PoleGrid:
         ]
         cand_poles = {
             pole: CandidatePole(
-                pos=pole.pos,
-                pole_type=pole.pole_type,
-                covered_entities=self.powered_entities(pole) - already_powered,
+                orig=pole,
+                powered_entities=self.powered_entities(pole) - already_powered,
                 connects_to_existing=any(self.pole_neighbors(pole)),
             )
             for pole in poles
         }
+        if remove_empty:
+            cand_poles = {
+                pole: candidate
+                for pole, candidate in cand_poles.items()
+                if candidate.powered_entities
+            }
         pole_graph = PoleGrid()
         for pole, _ in cand_poles.items():
             pole_graph.add(pole, allow_overlap=True)
@@ -312,8 +320,9 @@ class PoleGrid:
             candidate.pole_neighbors = [
                 cand_poles[neighbor]
                 for neighbor in pole_graph.pole_neighbors(pole)
+                if neighbor in cand_poles
             ]
-        return [cand_poles[pole] for pole in poles]
+        return [cand_poles[pole] for pole in poles if pole in cand_poles]
 
     def matplot(self, show: bool = True):
         for entity in self.entities:

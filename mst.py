@@ -22,6 +22,7 @@ class QE(NamedTuple):
 
 
 def mst(adj_list: AdjList) -> AdjList:
+    if not adj_list: return adj_list
     pts = set(adj_list.keys())
     res = defaultdict(set)
     start = next(iter(pts))

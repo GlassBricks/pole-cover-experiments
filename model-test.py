@@ -1,16 +1,11 @@
 import random
 from copy import deepcopy
 from math import ceil
-from typing import Callable
-
-import matplotlib.pyplot as plt
-from scipy.optimize import OptimizeResult
 
 from mst import mst, plot_adj_list
-from pole_cover import solve_approx_pole_cover, get_center, \
-    euclid_dist, get_pole_dists, dist_estimate1
-from pole_grid import PoleGrid, Pos, NonPole, Pole, CandidatePole, small_pole
-from set_cover import solve_set_cover
+from pole_cover import *
+from pole_grid import Pos, NonPole, Pole, small_pole
+from set_cover import *
 
 
 # use euclidean distance as the edge weight
@@ -53,56 +48,57 @@ def main():
     # g.matplot()
 
     pole_to_use = small_pole
-    possible_poles = g.all_candidate_poles(pole_to_use)
-    center = get_center([pole.pos for pole in possible_poles])
-    for pole in possible_poles:
+    cand_poles = g.all_candidate_poles(pole_to_use)
+    center = get_center([pole.pos for pole in cand_poles])
+    for pole in cand_poles:
         pole.cost = euclid_dist(pole.pos, center) / 1000 + 1
 
-    dist_fun = dist_estimate1(pole_to_use)
+    dist_fun = dist_estimate1()
 
-
-    def try_with_solver(
-            name: str,
-            solver: Callable[[list[CandidatePole]], tuple[list[CandidatePole], OptimizeResult]],
-    ):
-        poles, res = solver(possible_poles)
-
+    def visualize_poles(poles: list[CandidatePole],
+                        title: str,
+                        with_mst=False):
         g2 = deepcopy(g)
-
-        # ugly, but works for now
         for pole in poles:
             g2.add(Pole(pole.pos, pole_to_use.name))
 
         g2.matplot(show=False)
-        plt.suptitle(name)
-        plt.title(f"Num poles: {round(sum(res.x))}")
-
-        adj_list = g2.pole_adj_list()
-        the_mst = mst(adj_list)
-        plot_adj_list(the_mst)
+        plt.suptitle(title)
+        plt.title(f"Num poles: {len(poles)}")
+        if with_mst:
+            adj_list = g2.pole_adj_list()
+            the_mst = mst(adj_list)
+            plot_adj_list(the_mst)
         plt.show()
 
-        # # plot heatmap, using dists
-        # plt.gca().set_aspect('equal', adjustable='box')
-        # plt.plot(center[0] + 0.5, center[1] + 0.5, 'rX')
-        # plt.scatter([pole.pos[0] for pole in possible_poles], [pole.pos[1] for pole in possible_poles],
-        #             c=[dists[pole] for pole in possible_poles],
-        #             marker='.'
-        #             )
-        # plt.colorbar()
-        # plt.show()
+    poles, res = solve_set_cover(coverages=cand_poles, remove_subsets=True)
+    visualize_poles(poles, "Set cover", with_mst=True)
 
-    try_with_solver(
-        "Set cover",
-        lambda coverages: solve_set_cover(coverages)
-    )
+    poles1, res1 = solve_approx_pole_cover(cand_poles, dist_fun, remove_equiv=True, milp_options={
+        "time_limit": 15,
+        "disp": True,
+    })
+    visualize_poles(poles1, "Approx pole cover", with_mst=True)
 
-    try_with_solver(
-        "Approx pole cover",
-        lambda coverages: solve_approx_pole_cover(coverages, dist_fun, milp_options={
-            "disp": True,
-            "time_limit": 300,
-        }))
+    # def do_full_steiner_tree(
+    #         poles: list[CandidatePole],
+    # ):
+    #      poles = remove_subset_poles(poles, keep_empty=True)
+    #      poles = [
+    #          pole for pole in poles
+    #          if pole.powered_entities or (abs(pole.pos[0] + 0.5) % 2 == 0) and (abs(pole.pos[1] + 0.5) % 2 == 0) and (
+    #                  max(abs(pole.pos[0]), abs(pole.pos[1])) < 10
+    #          )]
+    #      remove_unreferenced_poles(set(poles))
+    #     visualize_poles(poles, "candidate poles")
+    #     starts = get_root_poles(poles)
+    #     poles, res = solve_pole_cover_steiner_flow(poles, starts, options={
+    #         "time_limit": 60*1,
+    #         "disp": True,
+    #         "parallel": True,
+    #     })
+    #     visualize_poles(poles, "steiner tree", with_mst=True)
+    # do_full_steiner_tree(cand_poles)
 
 
 if __name__ == "__main__":
