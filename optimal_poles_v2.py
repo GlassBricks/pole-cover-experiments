@@ -12,7 +12,7 @@ from pole_cover import dist_estimate1, solve_approx_pole_cover
 from pole_grid import PoleGrid, Pole, NonPole, aabb_to_bbox, CandidatePole, small_pole
 
 print("importing")
-bpStr = open("blueprints/di_gc2.txt").read()
+bpStr = open("blueprints/base8.txt").read()
 bp = Blueprint(bpStr)
 
 print("processing")
@@ -51,9 +51,7 @@ to_remove_set = set(to_remove)
 print("old pole counts", old_count)
 
 
-def prune_circuit_connections(
-        a: CircuitConnectableMixin,
-):
+def remove_circuit_connections(a: CircuitConnectableMixin):
     connections = a.connections
 
     def remove_pt(pt_list):
@@ -84,7 +82,7 @@ for el in old_list:
 
 for entity in bp.entities:
     if isinstance(entity, CircuitConnectableMixin):
-        prune_circuit_connections(entity)
+        remove_circuit_connections(entity)
     if isinstance(entity, PowerConnectableMixin):
         entity.neighbours = (
             [neighbor for neighbor in entity.neighbours if neighbor() not in to_remove_set])
@@ -98,7 +96,6 @@ for entity in bp.entities:
 print("getting candidate poles")
 
 possible_poles = g.all_candidate_poles(*poles_to_use, remove_empty=True, expand=0)
-
 
 # chests_center = get_center(
 #     [entity.pos for entity in g.entities if entity.name == "logistic-chest-storage"]
@@ -140,7 +137,6 @@ poles, res = solve_approx_pole_cover(
     vis_poles_dist=True,
     milp_options={
         "disp": True,
-        # "time_limit": 60*30,
         "time_limit": 3 * 60,
         "mip_rel_gap": 0.001
     }
@@ -186,7 +182,7 @@ for pole in poles:
 
 # print(bp.to_dict())
 str = bp.to_string()
-open("output2.txt", "w").write(str)
+open("output.txt", "w").write(str)
 
 print("final visualizing")
 plt.figure(dpi=100, figsize=(10, 10))

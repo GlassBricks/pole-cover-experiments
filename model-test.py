@@ -5,7 +5,6 @@ from math import ceil
 from mst import mst, plot_adj_list
 from pole_cover import *
 from pole_grid import Pos, NonPole, Pole, small_pole
-from set_cover import *
 
 
 # use euclidean distance as the edge weight
